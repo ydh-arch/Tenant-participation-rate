@@ -84,7 +84,6 @@
                         <button class="filter-btn bg-gray-200 text-gray-700" data-filter-group="type" data-filter="게임벤처4.0">게임벤처4.0</button>
                         <button class="filter-btn bg-gray-200 text-gray-700" data-filter-group="type" data-filter="입주사">입주사</button>
                         <button class="filter-btn bg-gray-200 text-gray-700" data-filter-group="type" data-filter="졸업사">졸업사</button>
-                        <!-- [수정] 버튼 텍스트와 data-filter 값을 '미참여'로 변경 -->
                         <button class="filter-btn bg-gray-200 text-gray-700" data-filter-group="type" data-filter="미참여">미참여</button>
                     </div>
                 </div>
@@ -205,6 +204,20 @@
             return null; 
         }
 
+        // [추가] 참석자명에서 인원 수를 파싱하는 함수
+        function parseAttendeeCount(nameStr) {
+            if (!nameStr) return 1; // 이름이 없어도 기록이 있다면 최소 1명으로 간주 (또는 0으로 수정 가능)
+            const cleanName = nameStr.trim();
+            if (!cleanName) return 1;
+
+            // "김성욱 외 4명" 또는 "김성욱 외4명" 패턴 확인
+            const match = cleanName.match(/외\s*(\d+)명?/);
+            if (match) {
+                const extraCount = parseInt(match[1], 10);
+                return 1 + extraCount; // 본인(1) + 외 N명
+            }
+            return 1; // "김성욱" 처럼 이름만 있는 경우 1명
+        }
 
         function processData(programTotals, participationData) {
             const TASK_NAME_COL = '과업명';
@@ -215,6 +228,7 @@
             const DETAIL_PROGRAM_COL = '상세프로그램명';
             const ALL_COMPANIES_COL = '입주기업명';
             const DATE_COL = '일자'; 
+            const ATTENDEE_COL = '참석자명'; // [추가] 참석자 컬럼
 
             totalsMap = {};
             const residentCompanyNames = new Set();
@@ -272,7 +286,6 @@
                 const records = participationMap[companyName] || [];
                 const isResident = residentCompanyNames.has(companyName);
 
-                // [수정] 기본값 및 fallback 값을 '미참여'로 변경
                 let type = '미참여'; 
                 if (records.length > 0) {
                     type = records[records.length - 1][TYPE_COL]?.trim() || '미참여'; 
@@ -280,12 +293,14 @@
                  if (!isResident && records.length > 0) {
                      type = '졸업사';
                  } else if (isResident && records.length === 0) {
-                     type = '미참여'; // 입주사인데 참여 이력 없으면 미참여
+                     type = '미참여'; 
                  }
 
-                const participationByTask = {};
+                const participationByTask = {}; // 참여 횟수 계산용 (Set)
+                const participationPeopleByTask = {}; // [추가] 과업별 참여 인원 수 합계
                 const allParticipatedInstances = new Set(); 
-                
+                let totalPeopleCount = 0; // [추가] 전체 참여 인원 수
+
                 records.forEach(rec => {
                     const taskType = rec[PARTICIPATED_TASK_COL]?.trim();
                     const programName = rec[DETAIL_PROGRAM_COL]?.trim();
@@ -299,6 +314,16 @@
                         }
                         participationByTask[taskType].add(programInstanceKey);
                         allParticipatedInstances.add(programInstanceKey); 
+
+                        // [추가] 인원 수 계산 로직
+                        const attendeeName = rec[ATTENDEE_COL] || '';
+                        const pCount = parseAttendeeCount(attendeeName);
+                        
+                        if (!participationPeopleByTask[taskType]) {
+                            participationPeopleByTask[taskType] = 0;
+                        }
+                        participationPeopleByTask[taskType] += pCount;
+                        totalPeopleCount += pCount;
                     }
                 });
                 
@@ -314,8 +339,10 @@
                 return {
                     name: companyName,
                     type: type,
-                    participationByTask: participationCounts,
+                    participationByTask: participationCounts, // 횟수
+                    participationPeopleByTask: participationPeopleByTask, // [추가] 인원수
                     totalParticipation: totalParticipationCount, 
+                    totalPeopleCount: totalPeopleCount, // [추가] 총 인원수
                     overallRate: overallRate, 
                 };
             });
@@ -359,28 +386,52 @@
                     
                     const chartId = `chart-${company.name.replace(/[^a-zA-Z0-9]/g, '')}-${index}`; 
 
-                    // [수정] companyTypeColors 키 변경: '미분류' -> '미참여'
                     const companyTypeColors = {
                         '게임벤처4.0': 'bg-blue-100 text-blue-800',
                         '입주사': 'bg-green-100 text-green-800',
                         '졸업사': 'bg-indigo-100 text-indigo-800',
-                        '미참여': 'bg-gray-100 text-gray-800' // 수정됨
+                        '미참여': 'bg-gray-100 text-gray-800'
                     };
                     const typeColor = companyTypeColors[company.type] || 'bg-gray-100 text-gray-800';
+
+                    let displayRate = company.overallRate;
+                    let displayLabel = "전체 참여율";
+                    // [추가] 표시할 인원 수 변수 설정 (기본값: 전체 인원)
+                    let displayPeopleCount = company.totalPeopleCount;
+
+                    if (currentTaskFilter !== '전체') {
+                        const participatedCount = company.participationByTask[currentTaskFilter] || 0;
+                        const totalPlannedCount = totalsMap[currentTaskFilter] || 0;
+                        
+                        if (totalPlannedCount > 0) {
+                            displayRate = (participatedCount / totalPlannedCount) * 100;
+                        } else {
+                            displayRate = 0;
+                        }
+                        displayLabel = `${currentTaskFilter} 참여율`;
+                        // [추가] 필터 적용 시 해당 과업의 인원 수로 변경
+                        displayPeopleCount = company.participationPeopleByTask[currentTaskFilter] || 0;
+                    }
 
                     let taskDetailsHtml = '<ul class="space-y-2 mt-4">';
                     Object.keys(totalsMap).sort().forEach(task => {
                         const participated = company.participationByTask[task] || 0;
                         const totalPlanned = totalsMap[task] || 0; 
+                        const peopleCount = company.participationPeopleByTask[task] || 0; 
+
                         taskDetailsHtml += `
                             <li class="text-sm text-gray-600 flex justify-between items-center">
                                 <span>${task}</span>
-                                <span class="font-semibold text-gray-800">${participated} / ${totalPlanned}회</span>
+                                <div>
+                                    <span class="font-semibold text-gray-800">${participated} / ${totalPlanned}회</span>
+                                    <span class="text-xs text-blue-600 ml-1">(${peopleCount}명)</span>
+                                </div>
                             </li>
                         `;
                     });
                     taskDetailsHtml += '</ul>';
 
+                    // [수정] 차트 아래 텍스트에 인원 수 표시 추가
                     card.innerHTML = `
                         <div class="flex justify-between items-start">
                             <h3 class="text-xl font-bold text-gray-800">${company.name}</h3>
@@ -390,7 +441,10 @@
                             <div class="chart-container mx-auto">
                                 <canvas id="${chartId}"></canvas>
                             </div>
-                            <p class="mt-3 text-lg font-bold text-gray-700">전체 참여율: ${company.overallRate.toFixed(1)}%</p>
+                            <p class="mt-3 text-lg font-bold text-gray-700">
+                                ${displayLabel}: ${displayRate.toFixed(1)}% 
+                                <span class="text-base font-normal text-blue-600">(${displayPeopleCount}명)</span>
+                            </p>
                         </div>
                         <div>
                             <h4 class="font-semibold text-gray-600 border-b pb-2 mb-2">과업별 참여 현황</h4>
@@ -398,7 +452,7 @@
                         </div>
                     `;
                     companyGrid.appendChild(card);
-                    createDoughnutChart(chartId, company.overallRate);
+                    createDoughnutChart(chartId, displayRate);
                 });
             }
         }
@@ -446,12 +500,28 @@
             const modalTitle = document.getElementById('modal-title');
             const modalBody = document.getElementById('modal-body');
 
-            modalTitle.textContent = `${companyName} 상세 참여 이력`;
+            // [수정] 현재 과업 필터가 적용되어 있다면 해당 과업 이력만 필터링
+            const historyData = rawParticipationData.filter(record => {
+                const isCompanyMatch = (record['기업명'] || '').trim() === companyName;
+                const isTaskMatch = currentTaskFilter === '전체' || (record['참여과업'] || '').trim() === currentTaskFilter;
+                return isCompanyMatch && isTaskMatch;
+            });
             
-            const historyData = rawParticipationData.filter(record => (record['기업명'] || '').trim() === companyName);
-            
+            // [추가] 필터링된 데이터에서 총 인원 수 계산
+            let totalPeopleInFilter = 0;
+            historyData.forEach(record => {
+                totalPeopleInFilter += parseAttendeeCount(record['참석자명']);
+            });
+
+            // [수정] 필터 상태 및 인원수에 따라 제목 변경
+            if (currentTaskFilter !== '전체') {
+                modalTitle.textContent = `${companyName} - ${currentTaskFilter} 참여 이력 (총 ${totalPeopleInFilter}명)`;
+            } else {
+                modalTitle.textContent = `${companyName} 상세 참여 이력 (총 ${totalPeopleInFilter}명)`;
+            }
+
             if (historyData.length === 0) {
-                 modalBody.innerHTML = '<p class="text-gray-500 text-center py-4">참여 이력이 없습니다.</p>';
+                 modalBody.innerHTML = '<p class="text-gray-500 text-center py-4">해당 과업의 참여 이력이 없습니다.</p>';
             } else {
                 const tableHeaders = ['일자', '참여과업', '상세프로그램명', '참석자명', '직급', '직군'];
                 let tableHTML = `<div class="overflow-x-auto"><table class="w-full text-sm text-left text-gray-500">
@@ -641,4 +711,3 @@
     </script>
 </body>
 </html>
-
